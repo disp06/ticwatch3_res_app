@@ -28,14 +28,50 @@ object PeakDetector {
         val expected = expectedIbiS ?: autocorrPeriod(y, fs)
         val neg = DoubleArray(y.size) { -y[it] }
         var best = DoubleArray(0)
+        var bestSignal = y
         var bestScore = Double.MAX_VALUE
         for (signal in listOf(y, neg)) for (f in THRESHOLD_FACTORS) {
             val refractory = if (expected != null) (0.6 * expected).coerceIn(0.28, 1.2) else 0.30
             val beats = detectOnce(signal, fs, valid, f, refractory)
             val s = score(beats, expected)
-            if (s < bestScore) { bestScore = s; best = beats }
+            if (s < bestScore) { bestScore = s; best = beats; bestSignal = signal }
         }
-        return best
+        return refineWithTemplate(bestSignal, fs, best)
+    }
+
+    /**
+     * Re-times every beat by cross-correlating it with the average pulse shape. Peak picking
+     * uses 3 samples and is easily shifted by noise; correlating ~0.5 s of waveform averages
+     * the noise out, which is what keeps RMSSD from being inflated by timing jitter.
+     */
+    fun refineWithTemplate(y: DoubleArray, fs: Double, beatsS: DoubleArray): DoubleArray {
+        if (beatsS.size < 8) return beatsS
+        val half = (0.25 * fs).roundToInt()
+        val maxLag = (0.08 * fs).roundToInt().coerceAtLeast(2)
+        val centers = beatsS.map { (it * fs).roundToInt() }.filter { it - half - maxLag >= 0 && it + half + maxLag < y.size }
+        if (centers.size < 8) return beatsS
+        val tpl = DoubleArray(2 * half + 1)
+        for (c in centers) for (k in -half..half) tpl[k + half] += y[c + k]
+        val tm = tpl.average()
+        for (k in tpl.indices) tpl[k] = tpl[k] / centers.size - tm
+        return DoubleArray(beatsS.size) { idx ->
+            val c = (beatsS[idx] * fs).roundToInt()
+            if (c - half - maxLag - 1 < 0 || c + half + maxLag + 1 >= y.size) return@DoubleArray beatsS[idx]
+            fun corr(lag: Int): Double {
+                var sxy = 0.0; var sx = 0.0
+                for (k in -half..half) sx += y[c + lag + k]
+                val mx = sx / tpl.size
+                for (k in -half..half) sxy += (y[c + lag + k] - mx) * tpl[k + half]
+                return sxy
+            }
+            var bestLag = 0
+            var bestC = Double.NEGATIVE_INFINITY
+            val r = DoubleArray(2 * maxLag + 3)
+            for (lag in -maxLag - 1..maxLag + 1) r[lag + maxLag + 1] = corr(lag)
+            for (lag in -maxLag..maxLag) if (r[lag + maxLag + 1] > bestC) { bestC = r[lag + maxLag + 1]; bestLag = lag }
+            val i = bestLag + maxLag + 1
+            (c + bestLag + parabolicOffset(r[i - 1], r[i], r[i + 1])) / fs
+        }
     }
 
     /** Lower is better: rate mismatch vs. expected period + beat-to-beat irregularity. */

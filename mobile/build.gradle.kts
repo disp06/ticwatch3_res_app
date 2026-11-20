@@ -18,8 +18,8 @@ android {
         applicationId = "com.disp06.researchcompanion"
         minSdk = 28
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
     }
 
     // CI injects a stable keystore (RC_KEYSTORE_*) so watch + phone APKs are always signed

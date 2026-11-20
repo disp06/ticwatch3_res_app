@@ -77,6 +77,11 @@ class Settings private constructor(ctx: Context) {
         _values.value = v
     }
 
+    /** Last stress baseline used by processing: "kind|rmssd". */
+    var baselineInfo: String
+        get() = p.getString("baseline", "default|40")!!
+        set(v) = p.edit().putString("baseline", v).apply()
+
     var watchStatusJson: String
         get() = p.getString("watchStatus", "{}")!!
         set(v) = p.edit().putString("watchStatus", v).apply()

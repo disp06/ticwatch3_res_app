@@ -41,8 +41,8 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
 fun stressLabel(v: Double) = when {
-    v < 30 -> "Calm"
-    v < 60 -> "Moderate"
+    v < 40 -> "Calm"
+    v < 65 -> "Moderate"
     else -> "High"
 }
 
@@ -68,6 +68,7 @@ fun DashboardScreen(vm: MainViewModel, onOpenTrends: () -> Unit) {
     val latest by vm.latest.collectAsStateWithLifecycle()
     val day by vm.last24h.collectAsStateWithLifecycle()
     val lastSync by vm.lastSync.collectAsStateWithLifecycle()
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var showEntry by remember { mutableStateOf(false) }
     var showSend by remember { mutableStateOf(false) }
     val time = remember { DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()) }
@@ -98,7 +99,15 @@ fun DashboardScreen(vm: MainViewModel, onOpenTrends: () -> Unit) {
                         Text(" /100", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 8.dp))
                     }
-                    Text(st?.let { stressLabel(it) } ?: "Needs a few calm minutes", style = MaterialTheme.typography.bodySmall,
+                    val (kind, base) = remember(day.size) {
+                        com.disp06.rc.mobile.Settings.get(ctx).baselineInfo.split('|').let { it[0] to it.getOrElse(1) { "" } }
+                    }
+                    val sub = when {
+                        st == null -> "Needs a few calm minutes"
+                        kind == "personal" -> "${stressLabel(st)} · baseline $base ms"
+                        else -> "${stressLabel(st)} · learning baseline"
+                    }
+                    Text(sub, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

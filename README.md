@@ -96,6 +96,9 @@ phone  PhoneListenerService ─ reassemble from Data Layer → verify → store 
 | | Result |
 |---|---|
 | Synthetic PPG, 25 Hz / 50 Hz / inverted polarity | RMSSD error 0.2–0.6 % (`SharedTests`) |
+| Weak alternate beats (was: half heart rate) | fixed: polarity × threshold candidates checked against watch HR / autocorrelation |
+| Noisy PPG (30 % noise, ±6 ms jitter) | 13–17 % with template-matched beat timing |
+| FIFO-clumped sensor timestamps | repaired, 0.7 % |
 | Motion gating | beats rejected, HRV withheld during vigorous motion |
 | Real wrist data vs. ECG | **not yet done.** Needs a chest strap (e.g. Polar H10) recording in parallel |
 
@@ -106,7 +109,8 @@ Synthetic signals are much cleaner than real wrist PPG. Expect real-world error 
 * **Watch storage:** the watch DB stores one compressed `payload` BLOB per batch instead of separate ppg/accel/gyro BLOBs. This avoids re-encoding on upload.
 * **Transfer:** chunked DataItems only, with no socket fallback. Batches stay around 75 KB per 5 min after compression.
 * **Charts:** drawn with Compose Canvas instead of MPAndroidChart/Vico. This keeps the phone APK at about 3 MB and gives touch-to-inspect readouts.
-* **LF/HF:** frequency-domain HRV is not implemented. The stress score uses the appendix RMSSD heuristic, and it is suppressed during moderate/vigorous activity because physical load ≠ stress.
+* **Stress formula:** the appendix heuristic `100·(1 − RMSSD/baseline)` is 0 whenever HRV is at or above baseline, which is most of the time. It is replaced by a personal log-ratio score, `30 − 60·log2(RMSSD/resting RMSSD)`, plus up to `40·(HR − resting HR)/resting HR`. Your usual resting state is ≈ 30, HRV at 70 % of usual ≈ 60, and half your usual HRV ≈ 90. The baseline is the 7-day median RMSSD of calm windows: "learning" after 15 min, "personal" after 3 h. Stress is suppressed during moderate/vigorous activity because physical load ≠ stress.
+* **LF/HF:** frequency-domain HRV is not implemented.
 * **SDK levels:** phone `minSdk 28`, `targetSdk 34`. Watch `targetSdk 30`, the highest the TicWatch Pro 3 can run (Wear OS 3.5).
 
 Research tool, not a medical device.

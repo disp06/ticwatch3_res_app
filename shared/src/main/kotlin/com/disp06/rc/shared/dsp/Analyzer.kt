@@ -111,10 +111,11 @@ object Analyzer {
      */
     fun beatsFromPpg(ppg: SensorStream, motion: Map<Long, Boolean>, ref: SensorStream? = null): DoubleArray {
         val result = ArrayList<Double>()
-        for ((from, to) in segments(ppg.timestampsMs)) {
+        val times = regularize(ppg.timestampsMs)
+        for ((from, to) in segments(times)) {
             val n = to - from
             if (n < 50) continue
-            val t = ppg.timestampsMs.copyOfRange(from, to)
+            val t = times.copyOfRange(from, to)
             val durationS = (t.last() - t.first()) / 1000.0
             if (durationS < 10) continue
             val fs = ((n - 1) / durationS).roundToInt().coerceIn(5, 200).toDouble()
@@ -147,6 +148,38 @@ object Analyzer {
         val ibi = (1 until beatsMs.size).map { beatsMs[it] - beatsMs[it - 1] }
         val target = expectedMs ?: Filters.median(ibi)
         return ibi.count { abs(it - target) <= 0.2 * target }
+    }
+
+    /**
+     * Repairs FIFO "clumped" timestamps: some sensor HALs stamp a whole hardware batch with
+     * (almost) the same time at delivery. A sensor samples at a fixed rate, so each clump is
+     * re-spaced backwards from its last timestamp at the period estimated from clump sizes.
+     * Regular streams are returned unchanged.
+     */
+    fun regularize(t: LongArray): LongArray {
+        if (t.size < 20) return t
+        val tiny = (1 until t.size).count { t[it] - t[it - 1] < 3 }
+        if (tiny < (t.size - 1) / 2) return t
+        val ends = ArrayList<Int>() // index of last sample in each clump
+        for (i in 1 until t.size) if (t[i] - t[i - 1] >= 3) ends += i - 1
+        ends += t.size - 1
+        var span = 0.0
+        var count = 0
+        for (k in 1 until ends.size) {
+            val interval = t[ends[k]] - t[ends[k - 1]]
+            if (interval in 1..3000) { span += interval; count += ends[k] - ends[k - 1] }
+        }
+        if (count == 0) return t
+        val period = span / count
+        val out = LongArray(t.size)
+        var start = 0
+        for (e in ends) {
+            for (i in start..e) out[i] = t[e] - Math.round((e - i) * period)
+            start = e + 1
+        }
+        // Keep the result monotonic if a clump's back-spacing overlaps the previous one.
+        for (i in 1 until out.size) if (out[i] <= out[i - 1]) out[i] = out[i - 1] + 1
+        return out
     }
 
     /** Index ranges [from, to) of samples without gaps longer than [GAP_MS]. */

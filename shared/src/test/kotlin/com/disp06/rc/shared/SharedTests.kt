@@ -2,6 +2,7 @@ package com.disp06.rc.shared
 
 import com.disp06.rc.shared.dsp.Activity
 import com.disp06.rc.shared.dsp.Analyzer
+import com.disp06.rc.shared.dsp.Baseline
 import com.disp06.rc.shared.dsp.DayAnalyzer
 import com.disp06.rc.shared.dsp.MetricPoint
 import com.disp06.rc.shared.dsp.Stress
@@ -25,7 +26,7 @@ class SharedTests {
 
     /** Synthetic PPG with a known IBI series; returns (batch, true RMSSD over whole batch). */
     private fun synthetic(fs: Double, minutes: Int, inverted: Boolean, seed: Int = 1, motion: Boolean = false,
-                          altAmp: Double = 1.0, noiseChannel0: Boolean = false, refHr: Boolean = false): Pair<SensorBatch, Double> {
+                          altAmp: Double = 1.0, noiseChannel0: Boolean = false, refHr: Boolean = false, noise: Double = 0.05, tsJitter: Double = 2.0): Pair<SensorBatch, Double> {
         val rnd = Random(seed)
         val beats = ArrayList<Double>()
         val ibis = ArrayList<Double>()
@@ -44,7 +45,7 @@ class SharedTests {
         val vals = FloatArray(n)
         var bi = 0
         for (i in 0 until n) {
-            val tm = i * 1000.0 / fs + rnd.nextDouble(-2.0, 2.0)
+            val tm = i * 1000.0 / fs + rnd.nextDouble(-tsJitter, tsJitter)
             ts[i] = start + tm.toLong()
             while (bi < beats.size - 1 && beats[bi + 1] < tm - 600) bi++
             var v = 0.0
@@ -52,7 +53,7 @@ class SharedTests {
                 val d = (tm - beats[j]) / 1000.0
                 v += (if (j % 2 == 1) altAmp else 1.0) * exp(-((d - 0.10) * (d - 0.10)) / (2 * 0.06 * 0.06)) + 0.35 * exp(-((d - 0.38) * (d - 0.38)) / (2 * 0.07 * 0.07))
             }
-            v += 0.4 * sin(2 * PI * 0.2 * tm / 1000.0) + rnd.nextDouble(-0.05, 0.05) + 5.0
+            v += 0.4 * sin(2 * PI * 0.2 * tm / 1000.0) + rnd.nextDouble(-noise, noise) + 5.0
             vals[i] = (if (inverted) -v else v).toFloat()
         }
         val accN = minutes * 60 * 50
@@ -137,6 +138,21 @@ class SharedTests {
         assertTrue(accuracy(synthetic(50.0, 5, true, altAmp = 0.45), "alt-weak autocorr") < 0.15)
     }
 
+    /** Realistic wrist noise: amplitude noise 30 % of pulse height, ±6 ms timestamp jitter. */
+    @Test fun noisyWristSignal() {
+        for (seed in 1..3) assertTrue(accuracy(synthetic(50.0, 5, false, seed = seed, noise = 0.3, tsJitter = 6.0, refHr = true), "noisy seed=$seed") < 0.25)
+    }
+
+    /** HAL delivers FIFO batches with near-identical timestamps (arrival-time stamping). */
+    @Test fun clumpedTimestamps() {
+        val (b, truth) = synthetic(50.0, 5, false, refHr = true)
+        val ppg = b.stream(StreamType.PPG)!!
+        val clumped = LongArray(ppg.size) { i -> ppg.timestampsMs[(i / 25) * 25 + 24.coerceAtMost(ppg.size - 1 - (i / 25) * 25)] + (i % 25) / 10 }
+        val nb = SensorBatch(b.key, b.startMs, b.endMs, b.mode, b.ppgSource,
+            b.streams.map { if (it.type == StreamType.PPG) SensorStream(StreamType.PPG, 1, clumped, it.values) else it })
+        assertTrue(accuracy(nb to truth, "clumped timestamps") < 0.15)
+    }
+
     @Test fun picksPulseChannel() {
         assertTrue(accuracy(synthetic(25.0, 5, false, noiseChannel0 = true), "2-channel") < 0.15)
     }
@@ -174,6 +190,18 @@ class SharedTests {
         assertTrue(p.hotspots.all { it.first == DayOfWeek.WEDNESDAY })
         val b = Stress.baseline(pts, zone, start + 14 * 86_400_000L)
         assertEquals(40.0, b.rmssd, 0.01)
+        assertEquals("personal", b.kind)
+    }
+
+    @Test fun stressScale() {
+        val base = Baseline(50.0, 60.0, "personal")
+        fun w(rmssd: Double?, hr: Double = 60.0, act: Activity = Activity.STILL) =
+            com.disp06.rc.shared.dsp.WindowMetrics(0, 1, hr, rmssd, null, null, act, 0.0, null, 1.0, 0.0, PpgSource.RAW_PPG)
+        assertEquals(30.0, Stress.score(w(50.0), base)!!, 0.5)   // usual → 30
+        assertEquals(90.0, Stress.score(w(25.0), base)!!, 0.5)   // half → 90
+        assertEquals(0.0, Stress.score(w(115.0), base)!!, 0.5)   // very relaxed → 0
+        assertTrue(Stress.score(w(50.0, hr = 75.0), base)!! > 30) // elevated HR adds
+        assertNull(Stress.score(w(25.0, act = Activity.ACTIVE), base))
     }
 }
 

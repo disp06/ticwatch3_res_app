@@ -3,6 +3,7 @@ package com.disp06.rc.shared.dsp
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
+import kotlin.math.ln
 import kotlin.math.sqrt
 
 /** Minimal metric row used by baseline / pattern analysis (decoupled from Room). */
@@ -20,45 +21,49 @@ data class Baseline(
     val rmssd: Double,
     /** Resting heart rate (bpm) used by the HR-only fallback. */
     val restingHr: Double,
-    /** How the baseline was obtained: "sleep", "rest" or "default". */
+    /** How the baseline was obtained: "personal" (≥ 3 h of calm data), "learning" or "default". */
     val kind: String,
 )
 
 object Stress {
     const val DEFAULT_RMSSD = 40.0
     const val DEFAULT_RESTING_HR = 62.0
+    /** Score at your typical resting HRV. */
+    private const val NORMAL = 30.0
 
     /**
-     * Brief appendix heuristic: 100 * (1 - RMSSD / baseline), clamped to 0..100.
-     * Returns null during moderate/vigorous activity (physical load is not stress) and when
-     * HRV is unavailable. Falls back to heart-rate elevation over resting HR when the watch
-     * only provides BPM (much weaker signal, flagged by the source column).
+     * Personal, log-ratio stress score (0..100):
+     *   30 − 60·log2(RMSSD / your resting RMSSD)  + up to 40·(HR − resting HR)/resting HR
+     * so your usual resting state ≈ 30, HRV at 70 % of usual ≈ 60, at half ≈ 90; higher HRV → 0.
+     * (The brief's 100·(1 − RMSSD/baseline) is 0 whenever HRV ≥ baseline, i.e. most of the time.)
+     * Returns null during moderate/vigorous activity (physical load is not stress) and when no
+     * usable signal exists. HR-only fallback uses heart-rate elevation alone.
      */
     fun score(m: WindowMetrics, baseline: Baseline): Double? {
         if (m.activity == Activity.MODERATE || m.activity == Activity.ACTIVE) return null
-        m.rmssd?.let { return (100 * (1 - it / baseline.rmssd)).coerceIn(0.0, 100.0) }
+        val hrTerm = m.heartRate?.let { 40 * ((it - baseline.restingHr) / baseline.restingHr).coerceAtLeast(0.0) } ?: 0.0
+        m.rmssd?.let { r ->
+            if (r <= 0) return null
+            return (NORMAL - 60 * ln(r / baseline.rmssd) / ln(2.0) + hrTerm).coerceIn(0.0, 100.0)
+        }
         val hr = m.heartRate ?: return null
         if (m.quality < 0.3) return null
-        return (100 * (hr - baseline.restingHr) / (0.5 * baseline.restingHr)).coerceIn(0.0, 100.0)
+        return (NORMAL + 150 * (hr - baseline.restingHr) / baseline.restingHr).coerceIn(0.0, 100.0)
     }
 
     /**
-     * RMSSD baseline = mean RMSSD over the last 7 days of "sleep" windows (00:00–06:00 local,
-     * still, good quality). Falls back to the median of all still windows, then to a default.
+     * Resting RMSSD baseline = median RMSSD of still, good-quality windows over the last 7 days.
+     * Starts learning after 3 calm windows (15 min); "default" until then.
      */
     fun baseline(points: List<MetricPoint>, zone: ZoneId, nowMs: Long): Baseline {
         val week = points.filter { it.timestampMs >= nowMs - 7 * 86_400_000L && it.quality >= 0.5 }
-        val still = week.filter { it.activity == Activity.STILL }
-        val sleep = still.filter {
-            val h = Instant.ofEpochMilli(it.timestampMs).atZone(zone).hour
-            h in 0..5 && it.rmssd != null
-        }
+        val still = week.filter { it.activity == Activity.STILL || it.activity == Activity.LIGHT }
+        val rm = still.mapNotNull { it.rmssd }
         val restHrs = still.mapNotNull { it.heartRate }
-        val restingHr = if (restHrs.size >= 6) percentile(restHrs, 0.10) else DEFAULT_RESTING_HR
+        val restingHr = if (restHrs.size >= 3) percentile(restHrs, 0.10) else DEFAULT_RESTING_HR
         return when {
-            sleep.size >= 6 -> Baseline(sleep.mapNotNull { it.rmssd }.average(), restingHr, "sleep")
-            still.count { it.rmssd != null } >= 6 ->
-                Baseline(Filters.median(still.mapNotNull { it.rmssd }), restingHr, "rest")
+            rm.size >= 36 -> Baseline(Filters.median(rm), restingHr, "personal")
+            rm.size >= 3 -> Baseline(Filters.median(rm), restingHr, "learning")
             else -> Baseline(DEFAULT_RMSSD, restingHr, "default")
         }
     }

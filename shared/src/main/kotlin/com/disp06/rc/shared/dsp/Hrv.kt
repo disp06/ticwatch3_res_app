@@ -19,7 +19,7 @@ object Hrv {
     const val MIN_IBI_MS = 300.0
     const val MAX_IBI_MS = 2000.0
     /** Reject IBIs deviating more than this fraction from the local median (missed/extra beats). */
-    private const val ECTOPIC_TOLERANCE = 0.25
+    private const val ECTOPIC_TOLERANCE = 0.20
     /** Minimum number of valid successive differences required to report HRV for a window. */
     const val MIN_PAIRS = 30
 
@@ -30,13 +30,26 @@ object Hrv {
             val ms = beatTimesMs[it] - beatTimesMs[it - 1]
             Ibi(beatTimesMs[it].toLong(), ms, ms in MIN_IBI_MS..MAX_IBI_MS)
         }
-        return raw.mapIndexed { i, ibi ->
+        // Pass 1: deviation from the local median (missed / extra beats).
+        val pass1 = raw.mapIndexed { i, ibi ->
             if (!ibi.valid) return@mapIndexed ibi
-            val neigh = (maxOf(0, i - 3)..minOf(raw.size - 1, i + 3))
+            val neigh = (maxOf(0, i - 4)..minOf(raw.size - 1, i + 4))
                 .filter { it != i && raw[it].valid }.map { raw[it].ms }
             if (neigh.size < 3) return@mapIndexed ibi
             val med = Filters.median(neigh)
             ibi.copy(valid = abs(ibi.ms - med) <= ECTOPIC_TOLERANCE * med)
+        }
+        // Pass 2: successive differences far outside this window's own spread are detection
+        // glitches, not physiology (robust 4.5 × MAD rule). Mark the later IBI of such a pair.
+        val diffs = (1 until pass1.size).filter { pass1[it].valid && pass1[it - 1].valid }
+            .map { abs(pass1[it].ms - pass1[it - 1].ms) }
+        if (diffs.size < 10) return pass1
+        val med = Filters.median(diffs)
+        val mad = Filters.median(diffs.map { abs(it - med) }).coerceAtLeast(5.0)
+        val limit = med + 4.5 * mad
+        return pass1.mapIndexed { i, ibi ->
+            if (i == 0 || !ibi.valid || !pass1[i - 1].valid) ibi
+            else ibi.copy(valid = abs(ibi.ms - pass1[i - 1].ms) <= limit)
         }
     }
 

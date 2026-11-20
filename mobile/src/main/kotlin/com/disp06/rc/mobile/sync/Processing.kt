@@ -49,6 +49,7 @@ object Processing {
         val now = System.currentTimeMillis()
         val history = db.metrics().range(now - 7 * 24 * HOUR, now + HOUR).map { it.toPoint() }
         val baseline = Stress.baseline(history, zone, now)
+        com.disp06.rc.mobile.Settings.get(ctx).baselineInfo = "${baseline.kind}|${baseline.rmssd.roundToInt()}"
 
         val rows = windows.map { m ->
             MetricEntity(

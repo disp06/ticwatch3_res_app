@@ -26,11 +26,16 @@ object Uploader {
     private const val RESEND_AFTER_MS = 45 * 60_000L
     private const val BUFFER_HOURS = 24L
 
-    suspend fun phoneReachable(ctx: Context): Boolean = runCatching {
-        Wearable.getCapabilityClient(ctx)
-            .getCapability(Protocol.CAPABILITY_PHONE, CapabilityClient.FILTER_REACHABLE).await()
-            .nodes.isNotEmpty()
-    }.getOrDefault(false)
+    suspend fun phoneReachable(ctx: Context): Boolean {
+        val cap = runCatching {
+            Wearable.getCapabilityClient(ctx)
+                .getCapability(Protocol.CAPABILITY_PHONE, CapabilityClient.FILTER_REACHABLE).await()
+                .nodes.isNotEmpty()
+        }.getOrDefault(false)
+        if (cap) return true
+        // Fallback when capability info isn't available: any connected node (the paired phone).
+        return runCatching { Wearable.getNodeClient(ctx).connectedNodes.await().isNotEmpty() }.getOrDefault(false)
+    }
 
     /** Puts pending batches into the Data Layer as <= 50 KB chunks. Returns number of batches sent. */
     suspend fun uploadPending(ctx: Context, force: Boolean = false): Int {

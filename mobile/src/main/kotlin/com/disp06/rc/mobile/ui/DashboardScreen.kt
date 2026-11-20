@@ -2,7 +2,10 @@ package com.disp06.rc.mobile.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -119,15 +123,17 @@ fun DashboardScreen(vm: MainViewModel, onOpenTrends: () -> Unit) {
 
             val collecting = status?.collecting == true
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = vm::toggleCollection, Modifier.weight(1f)) {
-                    Icon(Icons.Filled.PlayArrow, null, Modifier.size(18.dp))
-                    Text(if (collecting) "  Stop" else "  Start")
+                val btnPad = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                Button(onClick = vm::toggleCollection, Modifier.weight(1f), contentPadding = btnPad) {
+                    Icon(if (collecting) Icons.Filled.Close else Icons.Filled.PlayArrow, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (collecting) "Stop" else "Start", maxLines = 1)
                 }
-                FilledTonalButton(onClick = { showEntry = true }, Modifier.weight(1f)) {
-                    Icon(Icons.Filled.Add, null, Modifier.size(18.dp)); Text("  Log")
+                FilledTonalButton(onClick = { showEntry = true }, Modifier.weight(1f), contentPadding = btnPad) {
+                    Icon(Icons.Filled.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Log", maxLines = 1)
                 }
-                FilledTonalButton(onClick = { showSend = true }, Modifier.weight(1f)) {
-                    Icon(Icons.Filled.Notifications, null, Modifier.size(18.dp)); Text("  Remind")
+                FilledTonalButton(onClick = { showSend = true }, Modifier.weight(1f), contentPadding = btnPad) {
+                    Icon(Icons.Filled.Notifications, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Remind", maxLines = 1)
                 }
             }
             Text(

@@ -88,11 +88,16 @@ object WatchLink {
         _status.value = st.copy(sensors = null)
     }
 
-    suspend fun watchNodes(ctx: Context): List<String> = runCatching {
-        Wearable.getCapabilityClient(ctx)
-            .getCapability(Protocol.CAPABILITY_WATCH, CapabilityClient.FILTER_REACHABLE).await()
-            .nodes.map { it.id }
-    }.getOrDefault(emptyList())
+    /** Watch nodes advertising our capability; falls back to any connected node if capabilities aren't visible. */
+    suspend fun watchNodes(ctx: Context): List<String> {
+        val cap = runCatching {
+            Wearable.getCapabilityClient(ctx)
+                .getCapability(Protocol.CAPABILITY_WATCH, CapabilityClient.FILTER_REACHABLE).await()
+                .nodes.map { it.id }
+        }.getOrDefault(emptyList())
+        if (cap.isNotEmpty()) return cap
+        return runCatching { Wearable.getNodeClient(ctx).connectedNodes.await().map { it.id } }.getOrDefault(emptyList())
+    }
 
     /** Sends a message to every reachable watch. If none is reachable the command is queued and retried with backoff. */
     suspend fun send(ctx: Context, path: String, payload: ByteArray = ByteArray(0), queue: Boolean = true): Boolean {

@@ -28,6 +28,7 @@ import com.disp06.rc.wear.data.BatchEntity
 import com.disp06.rc.wear.data.Uploader
 import com.disp06.rc.wear.data.WatchDb
 import java.util.concurrent.Executors
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sqrt
 
@@ -61,6 +62,10 @@ class SensorCollectorService : Service(), SensorEventListener {
 
     private var mode = SamplingMode.STANDARD
     private var heartSensor: Sensor? = null
+    /** Device HR sensor recorded next to raw PPG as a reference for beat detection on the phone. */
+    private var refHrSensor: Sensor? = null
+    /** Per-sensor clock offsets for vendor sensors whose timestamps aren't elapsedRealtimeNanos. */
+    private val vendorOffsets = HashMap<Sensor, Long>()
     private var accel: Sensor? = null
     private var gyro: Sensor? = null
     private var steps: Sensor? = null
@@ -129,6 +134,7 @@ class SensorCollectorService : Service(), SensorEventListener {
             else -> PpgSource.HR_BPM
         }
         CollectorState.sourceName = choice.sensor?.name ?: "none"
+        refHrSensor = if (CollectorState.source == PpgSource.RAW_PPG) SensorProbe.preferWakeUp(sm, Sensor.TYPE_HEART_RATE) else null
         accel = SensorProbe.preferWakeUp(sm, Sensor.TYPE_ACCELEROMETER)
         gyro = if (mode.gyro && prefs.gyroEnabled) SensorProbe.preferWakeUp(sm, Sensor.TYPE_GYROSCOPE) else null
         steps = sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
@@ -140,6 +146,7 @@ class SensorCollectorService : Service(), SensorEventListener {
 
         val ppgHz = if (CollectorState.inMotion) mode.ppgMotionHz else mode.ppgStillHz
         register(heartSensor, ppgHz)
+        refHrSensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 5_000_000, handler) }
         register(accel, mode.imuHz)
         register(gyro, mode.imuHz)
         steps?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 60_000_000, handler) }
@@ -199,10 +206,15 @@ class SensorCollectorService : Service(), SensorEventListener {
     // endregion
 
     override fun onSensorChanged(e: SensorEvent) {
-        var ts = tsOffsetMs + e.timestamp / 1_000_000
         val now = System.currentTimeMillis()
-        // Some vendor sensors use a different clock base; fall back to arrival time.
-        if (abs(ts - now) > 60_000) ts = now
+        val raw = e.timestamp / 1_000_000
+        var ts = tsOffsetMs + raw
+        if (abs(ts - now) > 60_000) {
+            // Vendor sensor on a different clock base. Anchor it once and keep its own spacing
+            // (using arrival time would squash FIFO-batched samples together).
+            val off = vendorOffsets[e.sensor]?.takeIf { abs(raw + it - now) <= 60_000 } ?: (now - raw).also { vendorOffsets[e.sensor] = it }
+            ts = raw + off
+        }
         when (e.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 buf(StreamType.ACCEL, 3).add(ts, e.values, 3)
@@ -210,12 +222,12 @@ class SensorCollectorService : Service(), SensorEventListener {
             }
             Sensor.TYPE_GYROSCOPE -> buf(StreamType.GYRO, 3).add(ts, e.values, 3)
             Sensor.TYPE_STEP_COUNTER -> buf(StreamType.STEPS, 1).add(ts, e.values, 1)
-            Sensor.TYPE_HEART_RATE -> if (CollectorState.source == PpgSource.HR_BPM) {
-                if (e.accuracy != SensorManager.SENSOR_STATUS_NO_CONTACT) {
+            Sensor.TYPE_HEART_RATE -> if (e.sensor != heartSensor || CollectorState.source == PpgSource.HR_BPM) {
+                if (e.accuracy != SensorManager.SENSOR_STATUS_NO_CONTACT && e.values[0] > 0f) {
                     buf(StreamType.HEART_RATE, 1).add(ts, e.values, 1)
                     CollectorState.lastHr = e.values[0]
                 }
-                checkGap(ts)
+                if (CollectorState.source == PpgSource.HR_BPM) checkGap(ts)
             }
             else -> if (e.sensor == heartSensor) {
                 val ch = e.values.size.coerceIn(1, 4)
@@ -298,7 +310,11 @@ class SensorCollectorService : Service(), SensorEventListener {
                     )
                 )
                 Log.i(TAG, "Flushed ${batch.sampleCount} samples, ${payload.size / 1024} KB")
-                if (force || now - prefs.lastUploadMs >= prefs.syncMinutes * 60_000L) Uploader.enqueueUpload(this)
+                // Upload directly from the foreground service: WorkManager jobs get deferred by Doze
+                // on the watch for long periods, so batches piled up until the app was opened.
+                if (force || now - prefs.lastUploadMs >= prefs.syncMinutes * 60_000L - 60_000L) {
+                    appScope.launch { runCatching { Uploader.uploadPending(this@SensorCollectorService) } }
+                }
             } catch (t: Throwable) {
                 Log.e(TAG, "Flush failed", t)
             } finally {

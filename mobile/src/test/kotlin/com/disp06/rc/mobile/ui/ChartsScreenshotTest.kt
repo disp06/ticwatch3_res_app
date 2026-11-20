@@ -27,8 +27,12 @@ class ChartsScreenshotTest {
     private val hr = (0 until 288).map { TimePoint(t0 + it * 300_000L, 64 + 10 * sin(it / 25.0 + 1) + (it % 5)) }
     private val heat = (0 until 7).map { d -> (0 until 24).map { h -> if (h < 7) null else (20 + 8 * d + 30 * sin(h / 5.0)).coerceIn(0.0, 100.0) } }
 
-    @Test fun charts() = paparazzi.snapshot {
-        AppTheme(followSystem = false) {
+    @Test fun charts() = render(Accent.BLUE)
+    @Test fun chartsRed() = render(Accent.RED)
+    @Test fun chartsOrange() = render(Accent.ORANGE)
+
+    private fun render(accent: Accent) = paparazzi.snapshot {
+        AppTheme(followSystem = false, accent = accent) {
             Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ScreenTitle("Today", "Watch connected · 82% · raw PPG 25 Hz")
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -149,5 +149,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun import(uri: Uri) = io { say("Imported ${Exporter.importJson(ctx, uri)} records") }
 
+    /** Re-runs the analysis over every stored raw batch (e.g. after an algorithm update). */
+    fun reprocessAll() = io {
+        val infos = db.batches().allInfo()
+        if (infos.isEmpty()) { say("No raw data to reprocess"); return@io }
+        say("Reprocessing ${infos.size} batches…")
+        // Day by day keeps memory bounded.
+        infos.groupBy { it.startMs / 86_400_000L }.values.forEach { day ->
+            com.disp06.rc.mobile.sync.Processing.processRange(ctx, day.minOf { it.startMs }, day.maxOf { it.endMs })
+        }
+        say("Reprocessed ${infos.size} batches")
+    }
+
     fun clearData() = io { Exporter.clearAll(ctx); say("Local data cleared") }
 }

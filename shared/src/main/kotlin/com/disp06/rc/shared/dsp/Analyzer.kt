@@ -4,6 +4,7 @@ import com.disp06.rc.shared.PpgSource
 import com.disp06.rc.shared.SensorBatch
 import com.disp06.rc.shared.SensorStream
 import com.disp06.rc.shared.StreamType
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -38,12 +39,12 @@ object Analyzer {
     fun analyze(batch: SensorBatch, windowMs: Long = WINDOW_MS): List<WindowMetrics> {
         val accel = batch.stream(StreamType.ACCEL)
         val motionBlocks = accel?.let { motionBlocks(it) } ?: emptyMap()
+        val hrStream = batch.stream(StreamType.HEART_RATE)
         val beats: DoubleArray = when (batch.ppgSource) {
-            PpgSource.RAW_PPG -> batch.stream(StreamType.PPG)?.let { beatsFromPpg(it, motionBlocks) } ?: DoubleArray(0)
+            PpgSource.RAW_PPG -> batch.stream(StreamType.PPG)?.let { beatsFromPpg(it, motionBlocks, hrStream) } ?: DoubleArray(0)
             else -> DoubleArray(0)
         }
         val ibis = Hrv.ibis(beats)
-        val hrStream = batch.stream(StreamType.HEART_RATE)
         val steps = batch.stream(StreamType.STEPS)
 
         val first = (batch.startMs / windowMs) * windowMs
@@ -57,24 +58,29 @@ object Analyzer {
             val blocks = motionBlocks.filterKeys { it * MOTION_BLOCK_MS in w until wEnd }
             val motionFrac = if (blocks.isEmpty()) 0.0 else blocks.values.count { it } / blocks.size.toDouble()
 
-            var hr: Double? = null
+            // Reference heart rate from the watch's own HR algorithm (present in HR-only mode and,
+            // since v0.1.2, recorded alongside raw PPG).
+            val refValues = hrStream?.let { st ->
+                (0 until st.size).filter { st.timestampsMs[it] in w until wEnd && st.value(it) > 30f }.map { st.value(it).toDouble() }
+            } ?: emptyList()
+            val refHr = refValues.takeIf { it.isNotEmpty() }?.let { Filters.median(it) }
+            val refQuality = (refValues.size / (covered / 1000.0)).coerceIn(0.0, 1.0)
+
             var hrv: HrvResult? = null
-            var quality = 0.0
-            when (batch.ppgSource) {
-                PpgSource.RAW_PPG -> {
-                    val win = ibis.filter { it.timeMs in w until wEnd }
-                    hrv = Hrv.compute(win)
-                    hr = hrv?.meanHr
-                    quality = (win.filter { it.valid }.sumOf { it.ms } / covered).coerceIn(0.0, 1.0)
+            var ibiQuality = 0.0
+            if (batch.ppgSource == PpgSource.RAW_PPG) {
+                val win = ibis.filter { it.timeMs in w until wEnd }
+                hrv = Hrv.compute(win)
+                ibiQuality = (win.filter { it.valid }.sumOf { it.ms } / covered).coerceIn(0.0, 1.0)
+                // Beat detection disagreeing with the device HR means missed/extra beats: the IBIs
+                // (and therefore HRV) can't be trusted for this window.
+                if (hrv != null && refHr != null && abs(hrv.meanHr - refHr) / refHr > 0.15) {
+                    hrv = null
+                    ibiQuality = 0.0
                 }
-                PpgSource.HR_BPM -> hrStream?.let { s ->
-                    val v = (0 until s.size).filter { s.timestampsMs[it] in w until wEnd && s.value(it) > 30f }
-                        .map { s.value(it).toDouble() }
-                    if (v.isNotEmpty()) hr = v.average()
-                    quality = (v.size / (covered / 1000.0)).coerceIn(0.0, 1.0)
-                }
-                PpgSource.NONE -> {}
             }
+            val hr: Double? = refHr ?: hrv?.meanHr
+            val quality = maxOf(ibiQuality, refQuality)
             out += WindowMetrics(
                 startMs = w, endMs = wEnd,
                 heartRate = hr,
@@ -99,8 +105,11 @@ object Analyzer {
         else -> Activity.ACTIVE
     }
 
-    /** Detects beats in each continuous PPG segment; returns absolute beat times in ms. */
-    fun beatsFromPpg(ppg: SensorStream, motion: Map<Long, Boolean>): DoubleArray {
+    /**
+     * Detects beats in each continuous PPG segment; returns absolute beat times in ms.
+     * For multi-channel sensors the channel with the most rhythm-consistent beats is used.
+     */
+    fun beatsFromPpg(ppg: SensorStream, motion: Map<Long, Boolean>, ref: SensorStream? = null): DoubleArray {
         val result = ArrayList<Double>()
         for ((from, to) in segments(ppg.timestampsMs)) {
             val n = to - from
@@ -109,21 +118,35 @@ object Analyzer {
             val durationS = (t.last() - t.first()) / 1000.0
             if (durationS < 10) continue
             val fs = ((n - 1) / durationS).roundToInt().coerceIn(5, 200).toDouble()
-            val raw = DoubleArray(n) { ppg.value(from + it).toDouble() }
-            val y = Filters.bandPass(Filters.resample(t, raw, fs), fs)
+            val refHr = ref?.let { r ->
+                (0 until r.size).filter { r.timestampsMs[it] in t.first()..t.last() && r.value(it) > 30f }.map { r.value(it).toDouble() }
+            }?.takeIf { it.size >= 3 }?.let { Filters.median(it) }
+            val expectedIbiS = refHr?.let { 60.0 / it }
             val t0 = t.first()
-            val valid = BooleanArray(y.size) { i ->
-                val ms = t0 + (i * 1000.0 / fs).toLong()
-                motion[ms / MOTION_BLOCK_MS] != true
+            var best: DoubleArray? = null
+            var bestConsistent = -1
+            for (c in 0 until ppg.channels) {
+                val raw = DoubleArray(n) { ppg.value(from + it, c).toDouble() }
+                if (raw.all { it == raw[0] }) continue // unused / constant channel
+                val y = Filters.bandPass(Filters.resample(t, raw, fs), fs)
+                val valid = BooleanArray(y.size) { i -> motion[(t0 + (i * 1000.0 / fs).toLong()) / MOTION_BLOCK_MS] != true }
+                val beats = PeakDetector.detect(y, fs, valid, expectedIbiS)
+                    .filter { it * fs >= fs && it * fs <= y.size - fs } // drop filter edge (1 s each side)
+                    .map { t0 + it * 1000.0 }.toDoubleArray()
+                val consistent = consistentCount(beats, expectedIbiS?.times(1000))
+                if (consistent > bestConsistent) { bestConsistent = consistent; best = beats }
             }
-            // Ignore the first/last second of each segment (filter edge effects).
-            val edge = fs
-            for (b in PeakDetector.detect(y, fs, valid)) {
-                if (b * fs < edge || b * fs > y.size - edge) continue
-                result += t0 + b * 1000.0
-            }
+            best?.let { b -> b.forEach { result += it } }
         }
         return result.toDoubleArray()
+    }
+
+    /** Number of IBIs within ±20 % of the expected (or median) interval. */
+    private fun consistentCount(beatsMs: DoubleArray, expectedMs: Double?): Int {
+        if (beatsMs.size < 3) return 0
+        val ibi = (1 until beatsMs.size).map { beatsMs[it] - beatsMs[it - 1] }
+        val target = expectedMs ?: Filters.median(ibi)
+        return ibi.count { abs(it - target) <= 0.2 * target }
     }
 
     /** Index ranges [from, to) of samples without gaps longer than [GAP_MS]. */

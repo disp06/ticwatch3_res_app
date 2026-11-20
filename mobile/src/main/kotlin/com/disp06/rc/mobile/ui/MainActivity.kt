@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val s by vm.settings.collectAsStateWithLifecycle()
-            AppTheme(followSystem = s.followSystemTheme) {
+            AppTheme(followSystem = s.followSystemTheme, accent = Accent.of(s.accent)) {
                 if (!s.onboarded) Onboarding(vm) else AppScaffold(vm)
             }
         }

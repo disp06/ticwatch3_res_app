@@ -6,6 +6,17 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -143,10 +154,15 @@ fun SettingsScreen(vm: MainViewModel) {
                     OutlinedButton({ raw.launch("research-companion-raw.csv") }) { Text("Export raw samples") }
                     OutlinedButton({ import.launch(arrayOf("application/json", "*/*")) }) { Text("Import JSON") }
                 }
-                TextButton(onClick = { confirmClear = true }) { Text("Clear local data", color = MaterialTheme.colorScheme.error) }
+                Row {
+                    TextButton(onClick = vm::reprocessAll) { Text("Reprocess all data") }
+                    TextButton(onClick = { confirmClear = true }) { Text("Clear local data", color = MaterialTheme.colorScheme.error) }
+                }
             }
 
             SectionCard(title = "Appearance & alerts") {
+                Text("Accent colour", style = MaterialTheme.typography.bodyLarge)
+                AccentPicker(Accent.of(s.accent)) { a -> vm.updateSettings(pushToWatch = false) { it.copy(accent = a.name) } }
                 SettingRow("Follow system theme", "Off = always dark") {
                     Switch(s.followSystemTheme, { v -> vm.updateSettings(pushToWatch = false) { it.copy(followSystemTheme = v) } })
                 }
@@ -240,4 +256,28 @@ private fun RuleDialog(rule: ReminderRule, onDismiss: () -> Unit, onSave: (Remin
             }
         },
     )
+}
+
+/** Row of colour swatches; the wallpaper option is a sweep of hues. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AccentPicker(selected: Accent, onPick: (Accent) -> Unit) {
+    val dynamicAvailable = Build.VERSION.SDK_INT >= 31
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Accent.entries.filter { it != Accent.DYNAMIC || dynamicAvailable }.forEach { a ->
+            val isSel = a == selected || (!dynamicAvailable && selected == Accent.DYNAMIC && a == Accent.BLUE)
+            val fill = if (a.seed == null) Brush.sweepGradient(listOf(Color(0xFFE5484D), Color(0xFFE8B23A), Color(0xFF3DBE7A), Color(0xFF4C8DF6), Color(0xFF8E6CEF), Color(0xFFE5484D)))
+                else SolidColor(Color(a.seed))
+            Box(
+                Modifier.size(40.dp)
+                    .clip(CircleShape)
+                    .border(if (isSel) 3.dp else 0.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                    .padding(if (isSel) 5.dp else 0.dp)
+                    .clip(CircleShape)
+                    .background(fill)
+                    .semantics { contentDescription = a.label + if (isSel) ", selected" else "" }
+                    .clickable { onPick(a) },
+            )
+        }
+    }
 }

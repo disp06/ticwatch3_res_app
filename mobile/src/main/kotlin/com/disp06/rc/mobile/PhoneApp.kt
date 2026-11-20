@@ -47,6 +47,8 @@ class Settings private constructor(ctx: Context) {
         val phoneNotifications: Boolean,
         val followSystemTheme: Boolean,
         val onboarded: Boolean,
+        /** Accent enum name (see ui.Accent); "DYNAMIC" = wallpaper colours. */
+        val accent: String,
     )
 
     private val _values = MutableStateFlow(read())
@@ -61,6 +63,7 @@ class Settings private constructor(ctx: Context) {
         phoneNotifications = p.getBoolean("phoneNotif", true),
         followSystemTheme = p.getBoolean("systemTheme", false),
         onboarded = p.getBoolean("onboarded", false),
+        accent = p.getString("accent", "DYNAMIC")!!,
     )
 
     fun update(block: (Values) -> Values) {
@@ -69,6 +72,7 @@ class Settings private constructor(ctx: Context) {
             .putString("mode", v.mode.name).putBoolean("gyro", v.gyro).putInt("ppgSensor", v.ppgSensor)
             .putInt("syncMinutes", v.syncMinutes).putBoolean("phoneNotif", v.phoneNotifications)
             .putBoolean("systemTheme", v.followSystemTheme).putBoolean("onboarded", v.onboarded)
+            .putString("accent", v.accent)
             .apply()
         _values.value = v
     }

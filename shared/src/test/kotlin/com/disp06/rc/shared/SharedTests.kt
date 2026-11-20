@@ -24,7 +24,8 @@ class SharedTests {
     private val start = ZonedDateTime.of(2026, 11, 16, 10, 0, 0, 0, ZoneId.of("UTC")).toInstant().toEpochMilli()
 
     /** Synthetic PPG with a known IBI series; returns (batch, true RMSSD over whole batch). */
-    private fun synthetic(fs: Double, minutes: Int, inverted: Boolean, seed: Int = 1, motion: Boolean = false): Pair<SensorBatch, Double> {
+    private fun synthetic(fs: Double, minutes: Int, inverted: Boolean, seed: Int = 1, motion: Boolean = false,
+                          altAmp: Double = 1.0, noiseChannel0: Boolean = false, refHr: Boolean = false): Pair<SensorBatch, Double> {
         val rnd = Random(seed)
         val beats = ArrayList<Double>()
         val ibis = ArrayList<Double>()
@@ -49,7 +50,7 @@ class SharedTests {
             var v = 0.0
             for (j in bi until minOf(beats.size, bi + 3)) {
                 val d = (tm - beats[j]) / 1000.0
-                v += exp(-((d - 0.10) * (d - 0.10)) / (2 * 0.06 * 0.06)) + 0.35 * exp(-((d - 0.38) * (d - 0.38)) / (2 * 0.07 * 0.07))
+                v += (if (j % 2 == 1) altAmp else 1.0) * exp(-((d - 0.10) * (d - 0.10)) / (2 * 0.06 * 0.06)) + 0.35 * exp(-((d - 0.38) * (d - 0.38)) / (2 * 0.07 * 0.07))
             }
             v += 0.4 * sin(2 * PI * 0.2 * tm / 1000.0) + rnd.nextDouble(-0.05, 0.05) + 5.0
             vals[i] = (if (inverted) -v else v).toFloat()
@@ -63,10 +64,16 @@ class SharedTests {
             acc[i * 3 + 1] = (0.2 + rnd.nextDouble(-0.02, 0.02)).toFloat()
             acc[i * 3 + 2] = (9.8 + rnd.nextDouble(-0.02, 0.02) + shake).toFloat()
         }
+        val ppg = if (!noiseChannel0) SensorStream(StreamType.PPG, 1, ts, vals) else
+            SensorStream(StreamType.PPG, 2, ts, FloatArray(n * 2) { if (it % 2 == 0) rnd.nextFloat() * 3 else vals[it / 2] })
+        val extra = if (!refHr) emptyList() else {
+            val hrTs = LongArray(minutes * 60) { start + it * 1000L }
+            listOf(SensorStream(StreamType.HEART_RATE, 1, hrTs, FloatArray(hrTs.size) { (60000 / 850.0).toFloat() + rnd.nextFloat() * 2 - 1 }))
+        }
         val batch = SensorBatch(
             "dev-1", start, start + minutes * 60_000L, SamplingMode.STANDARD, PpgSource.RAW_PPG,
-            listOf(
-                SensorStream(StreamType.PPG, 1, ts, vals),
+            extra + listOf(
+                ppg,
                 SensorStream(StreamType.ACCEL, 3, accTs, acc),
                 SensorStream(StreamType.STEPS, 1, longArrayOf(start + 1000, start + 200_000), floatArrayOf(100f, 160f)),
             ),
@@ -112,6 +119,27 @@ class SharedTests {
     @Test fun hrvAccuracy50Hz() = checkAccuracy(50.0, false)
     @Test fun hrvAccuracy25Hz() = checkAccuracy(25.0, false)
     @Test fun hrvAccuracyInvertedPolarity() = checkAccuracy(25.0, true)
+
+    private fun accuracy(b: Pair<SensorBatch, Double>, label: String): Double {
+        val m = Analyzer.analyze(b.first).single()
+        val err = if (m.rmssd == null) Double.NaN else abs(m.rmssd!! - b.second) / b.second
+        println("$label: HR=%.1f RMSSD=%s err=%.1f%%".format(m.heartRate, m.rmssd?.let { "%.1f".format(it) }, err * 100))
+        assertEquals(60000 / 850.0, m.heartRate!!, 3.0)
+        return err
+    }
+
+    /** Weak alternate beats used to make the SSF threshold skip every other beat (→ half HR). */
+    @Test fun weakAlternateBeatsWithReference() {
+        assertTrue(accuracy(synthetic(50.0, 5, false, altAmp = 0.35, refHr = true), "alt-weak + ref") < 0.15)
+    }
+
+    @Test fun weakAlternateBeatsAutocorr() {
+        assertTrue(accuracy(synthetic(50.0, 5, true, altAmp = 0.45), "alt-weak autocorr") < 0.15)
+    }
+
+    @Test fun picksPulseChannel() {
+        assertTrue(accuracy(synthetic(25.0, 5, false, noiseChannel0 = true), "2-channel") < 0.15)
+    }
 
     @Test fun motionGatesBeats() {
         val (batch, _) = synthetic(50.0, 5, false, motion = true)

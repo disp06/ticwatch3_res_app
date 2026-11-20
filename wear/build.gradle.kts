@@ -16,8 +16,8 @@ android {
         applicationId = "com.disp06.researchcompanion"
         minSdk = 28        // TicWatch Pro 3 GPS, Wear OS 2.x (Android 9)
         targetSdk = 30     // highest API the TicWatch Pro 3 can reach (Wear OS 3.5)
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
     }
 
     // CI injects a stable keystore (RC_KEYSTORE_*) so watch + phone APKs are always signed
